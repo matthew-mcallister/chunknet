@@ -1,30 +1,17 @@
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 
 class Autoencoder(nn.Module):
-    def __init__(self) -> None:
-        pass
-
-
-class Encoder3d(nn.Module):
-    embedding: nn.Module
-    conv_in: nn.Module
-    down: nn.ModuleList
-    mid: nn.ModuleList
-    norm_out: nn.Module
-    conv_out: nn.Conv3d
+    embedding: nn.Embedding
 
     def __init__(
         self,
-        *,
-        num_embeddings: int,
         embedding_dim: int,
-        channels: int,
-        multipliers: list[int],
-        n_resnet_blocks: int,
-        z_channels: int,
+        num_embeddings: int,
     ) -> None:
         """Constructs an encoder for the three-dimensional component of
         the latent space.
@@ -32,10 +19,12 @@ class Encoder3d(nn.Module):
         First, each block type is represented by an int, and the block
         types are mapped to vectors by an embedding layer. These
         embedded vectors are not to be confused with the final embedding
-        of the input data in latent space.
+        of the input data into the latent space.
 
         The rest of the encoder is modeled closely on the encoder used
-        in 2D latent diffusion.
+        in 2D latent diffusion. Each multiplier defines a block in the
+        encoder. After each block, the image is downsampled by a factor
+        of two.
 
         num_embeddings: Number of keys in embedding layer.
         embedding_dim: Dimension of embedded vectors.
@@ -47,24 +36,47 @@ class Encoder3d(nn.Module):
             intermediate block.
         z_channels: Number of channels in destination encoding.
         """
+        self.embedding = nn.Embedding(
+            num_embeddings, embedding_dim, padding_idx=-1)
+
+
+class Encoder3d(nn.Module):
+    embedding: nn.Embedding
+    conv_in: nn.Conv3d
+    down: nn.ModuleList
+    mid: nn.ModuleList
+    norm_out: nn.Module
+    conv_out: nn.Conv3d
+
+    def __init__(
+        self,
+        *,
+        embedding: nn.Embedding,
+        channels: int,
+        multipliers: list[int],
+        n_resnet_blocks: int,
+        z_channels: int,
+    ) -> None:
         super().__init__()
 
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim, padding_idx=-1)
+        self.embedding = embedding
 
-        # Initial convolution layer from embedding space
-        self.conv_in = nn.Conv3d(1, channels, 3, stride=1, padding=1)
+        # Initial convolution layer from block embeddings
+        self.conv_in = nn.Conv3d(
+            embedding.embedding_dim, channels, 3, stride=1, padding=1)
 
         # Each top-level block consists of a number of ResNet blocks
         # followed by a downsampling layer. Each block may have a
         # different number of channels from the last.
         sizes: list[int] = [m * channels for m in [1] + multipliers]
         self.down = nn.ModuleList()
-        for i in range(len(sizes) - 1):
-            self.down.append(EncoderBlock(
+        for i in range(len(multipliers)):
+            self.down.append(CodecBlock(
                 in_channels=sizes[i],
                 out_channels=sizes[i + 1],
                 n_resnet_blocks=n_resnet_blocks,
-                downsample=i < len(sizes) - 1,
+                # Downsample at the end of each block except the last
+                sample=DownSample if i + 1 < len(multipliers) else None,
             ))
 
         # Final ResNet blocks with attention
@@ -94,9 +106,64 @@ class Encoder3d(nn.Module):
         return x
 
 
-class EncoderBlock(nn.Module):
+class Decoder3d(nn.Module):
+    def __init__(
+        self,
+        *,
+        embedding: nn.Embedding,
+        channels: int,
+        multipliers: list[int],
+        n_resnet_blocks: int,
+        z_channels: int,
+    ) -> None:
+        super().__init__()
+
+        sizes: list[int] = [m * channels for m in [1] + multipliers]
+
+        first_size = sizes[-1]
+        self.conv_in = nn.Conv3d(first_size, z_channels, 3, padding=1)
+        self.mid = nn.ModuleList((
+            ResnetBlock(first_size, first_size),
+            AttentionBlock(first_size),
+            ResnetBlock(first_size, first_size),
+        ))
+
+        self.up = nn.ModuleList()
+        for i in reversed(range(len(multipliers))):
+            self.up.append(CodecBlock(
+                in_channels=sizes[i + 1],
+                out_channels=sizes[i],
+                n_resnet_blocks=n_resnet_blocks,
+                sample=UpSample if i > 0 else None,
+            ))
+
+        self.norm_out = normalization(channels)
+        self.conv_out = nn.Conv3d(
+            channels, embedding.embedding_dim, 3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv_in(x)
+        for block in self.mid:
+            x = block(x)
+        for block in self.up:
+            x = block(x)
+
+        x = self.norm_out(x)
+        x = swish(x)
+        x = self.conv_out(x)
+
+        # That's it. The output is the embedding vector. You have to
+        # pick some lookup method to retrive the original index. Two
+        # options: add more layers to train a classifier (gross), or
+        # just pick the nearest embedding with respect to some distance
+        # measure. As long as the embeddings are properly regularized,
+        # there should be no issue with ambiguity.
+        return x
+
+
+class CodecBlock(nn.Module):
     resnet: nn.ModuleList
-    downsample: nn.Module
+    sample: nn.Module
 
     def __init__(
         self,
@@ -104,7 +171,7 @@ class EncoderBlock(nn.Module):
         in_channels: int,
         out_channels: int,
         n_resnet_blocks: int,
-        downsample: bool,
+        sample: type[DownSample] | type[UpSample] | None,
     ) -> None:
         # Append resnet blocks
         resnet = nn.ModuleList()
@@ -113,16 +180,15 @@ class EncoderBlock(nn.Module):
             resnet.append(ResnetBlock(out_channels, out_channels))
         self.resnet = resnet
 
-        # Downsample at the end of each block except the last
-        if downsample:
-            self.downsample = DownSample(out_channels)
+        if sample:
+            self.sample = sample(out_channels)
         else:
-            self.downsample = nn.Identity()
+            self.sample = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.resnet:
             x = block(x)
-        x = self.downsample(x)
+        x = self.sample(x)
         return x
 
 
@@ -134,7 +200,7 @@ class AttentionBlock(nn.Module):
     proj_out: nn.Module
     scale: float
 
-    def __init__(self, channels: int):
+    def __init__(self, channels: int) -> None:
         super().__init__()
         # Group normalization
         self.norm = normalization(channels)
@@ -145,7 +211,7 @@ class AttentionBlock(nn.Module):
         self.proj_out = nn.Conv3d(channels, channels, 1)
         self.scale = channels ** -0.5
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: tensor of shape `[batch_size, channels, height, width]`
         """
@@ -181,14 +247,26 @@ class AttentionBlock(nn.Module):
 class DownSample(nn.Module):
     conv: nn.Module
 
-    def __init__(self, channels: int):
+    def __init__(self, channels: int) -> None:
         super().__init__()
         self.conv = nn.Conv3d(channels, channels, 3, stride=2)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.pad(x, (0, 1, 0, 1, 0, 1), mode='constant', value=-1)
         x = self.conv(x)
         return x
+
+
+class UpSample(nn.Module):
+    conv: nn.Module
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.conv = nn.Conv3d(channels, channels, 3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2.0, mode='nearest')
+        return self.conv(x)
 
 
 class ResnetBlock(nn.Module):
