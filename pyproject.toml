@@ -8,9 +8,13 @@ license = "GPLv3"
 [tool.poetry.dependencies]
 python = "^3.11"
 torch = "^2.0.0"
+numpy = "^1.24.3"
 
 [tool.poetry.dev-dependencies]
 mypy = "^1.2.0"
+
+[tool.poetry.group.dev.dependencies]
+autopep8 = "^2.0.2"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

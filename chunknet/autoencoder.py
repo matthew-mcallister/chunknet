@@ -3,44 +3,69 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch import Tensor
 
 
 class Autoencoder(nn.Module):
     embedding: nn.Embedding
+    encoder_3d: Encoder3d
+    decoder_3d: Decoder3d
 
     def __init__(
         self,
-        embedding_dim: int,
-        num_embeddings: int,
+        embedding: nn.Embedding,
+        encoder_3d: Encoder3d,
+        decoder_3d: Decoder3d,
     ) -> None:
-        """Constructs an encoder for the three-dimensional component of
-        the latent space.
+        self.embedding = embedding
+        self.encoder_3d = encoder_3d
+        self.decoder_3d = decoder_3d
 
-        First, each block type is represented by an int, and the block
-        types are mapped to vectors by an embedding layer. These
-        embedded vectors are not to be confused with the final embedding
-        of the input data into the latent space.
+    def encode(self, x: Tensor) -> Tensor:
+        x = self.embedding(x)
+        x = self.encoder_3d(x)
+        return x
 
-        The rest of the encoder is modeled closely on the encoder used
-        in 2D latent diffusion. Each multiplier defines a block in the
-        encoder. After each block, the image is downsampled by a factor
-        of two.
-
-        num_embeddings: Number of keys in embedding layer.
-        embedding_dim: Dimension of embedded vectors.
-        channels: Base number of channels in model.
-        multipliers: Defines number and number of channels of
-            intermediate blocks. Number of channels is
-            `channels * multipliers[i]`.
-        n_resnet_blocks: Number of resnet blocks to use in each
-            intermediate block.
-        z_channels: Number of channels in destination encoding.
+    def decode(self, x: Tensor) -> Tensor:
+        """Decodes a latent vector. Returns vectors in the embedding
+        space, which must be de-embedded.
         """
-        self.embedding = nn.Embedding(
-            num_embeddings, embedding_dim, padding_idx=-1)
+        x = self.decoder_3d(x)
+        return x
+
+    def training_step(
+        self,
+        optimizer: torch.optim.Optimizer,
+    ) -> None:
+        optimizer.zero_grad()
+        raise NotImplementedError
 
 
 class Encoder3d(nn.Module):
+    # TODO: Quantization?
+    """Constructs an encoder for the three-dimensional component of
+    the latent space.
+
+    First, each block type is represented by an int, and the block
+    types are mapped to vectors by an embedding layer. These
+    embedded vectors are not to be confused with the final embedding
+    of the input data into the latent space.
+
+    The rest of the encoder is modeled closely on the encoder used
+    in 2D latent diffusion. Each multiplier defines a block in the
+    encoder. After each block, the image is downsampled by a factor
+    of two.
+
+    num_embeddings: Number of keys in embedding layer.
+    embedding_dim: Dimension of embedded vectors.
+    channels: Base number of channels in model.
+    multipliers: Defines number and number of channels of
+        intermediate blocks. Number of channels is
+        `channels * multipliers[i]`.
+    n_resnet_blocks: Number of resnet blocks to use in each
+        intermediate block.
+    z_channels: Number of channels in destination encoding.
+    """
     embedding: nn.Embedding
     conv_in: nn.Conv3d
     down: nn.ModuleList
@@ -56,6 +81,7 @@ class Encoder3d(nn.Module):
         multipliers: list[int],
         n_resnet_blocks: int,
         z_channels: int,
+        dropout: float,
     ) -> None:
         super().__init__()
 
@@ -77,22 +103,22 @@ class Encoder3d(nn.Module):
                 n_resnet_blocks=n_resnet_blocks,
                 # Downsample at the end of each block except the last
                 sample=DownSample if i + 1 < len(multipliers) else None,
+                dropout=dropout,
             ))
 
         # Final ResNet blocks with attention
         last_size = sizes[-1]
         self.mid = nn.ModuleList((
-            ResnetBlock(last_size, last_size),
+            ResnetBlock(last_size, last_size, dropout=dropout),
             AttentionBlock(last_size),
-            ResnetBlock(last_size, last_size),
+            ResnetBlock(last_size, last_size, dropout=dropout),
         ))
 
         # Map to latent space
         self.norm_out = normalization(last_size)
         self.conv_out = nn.Conv3d(last_size, 2 * z_channels, 3, padding=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.embedding(x)
+    def forward(self, x: Tensor) -> Tensor:
         x = self.conv_in(x)
         for block in self.down:
             x = block(x)
@@ -115,6 +141,7 @@ class Decoder3d(nn.Module):
         multipliers: list[int],
         n_resnet_blocks: int,
         z_channels: int,
+        dropout: float,
     ) -> None:
         super().__init__()
 
@@ -123,9 +150,9 @@ class Decoder3d(nn.Module):
         first_size = sizes[-1]
         self.conv_in = nn.Conv3d(first_size, z_channels, 3, padding=1)
         self.mid = nn.ModuleList((
-            ResnetBlock(first_size, first_size),
+            ResnetBlock(first_size, first_size, dropout=dropout),
             AttentionBlock(first_size),
-            ResnetBlock(first_size, first_size),
+            ResnetBlock(first_size, first_size, dropout=dropout),
         ))
 
         self.up = nn.ModuleList()
@@ -135,13 +162,14 @@ class Decoder3d(nn.Module):
                 out_channels=sizes[i],
                 n_resnet_blocks=n_resnet_blocks,
                 sample=UpSample if i > 0 else None,
+                dropout=dropout,
             ))
 
         self.norm_out = normalization(channels)
         self.conv_out = nn.Conv3d(
             channels, embedding.embedding_dim, 3, padding=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         x = self.conv_in(x)
         for block in self.mid:
             x = block(x)
@@ -152,12 +180,6 @@ class Decoder3d(nn.Module):
         x = swish(x)
         x = self.conv_out(x)
 
-        # That's it. The output is the embedding vector. You have to
-        # pick some lookup method to retrive the original index. Two
-        # options: add more layers to train a classifier (gross), or
-        # just pick the nearest embedding with respect to some distance
-        # measure. As long as the embeddings are properly regularized,
-        # there should be no issue with ambiguity.
         return x
 
 
@@ -172,12 +194,14 @@ class CodecBlock(nn.Module):
         out_channels: int,
         n_resnet_blocks: int,
         sample: type[DownSample] | type[UpSample] | None,
+        dropout: float,
     ) -> None:
         # Append resnet blocks
         resnet = nn.ModuleList()
-        resnet.append(ResnetBlock(in_channels, out_channels))
+        resnet.append(ResnetBlock(in_channels, out_channels, dropout=dropout))
         for _ in range(n_resnet_blocks - 1):
-            resnet.append(ResnetBlock(out_channels, out_channels))
+            resnet.append(ResnetBlock(
+                out_channels, out_channels, dropout=dropout))
         self.resnet = resnet
 
         if sample:
@@ -185,7 +209,7 @@ class CodecBlock(nn.Module):
         else:
             self.sample = nn.Identity()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         for block in self.resnet:
             x = block(x)
         x = self.sample(x)
@@ -211,14 +235,14 @@ class AttentionBlock(nn.Module):
         self.proj_out = nn.Conv3d(channels, channels, 1)
         self.scale = channels ** -0.5
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """
         x: tensor of shape `[batch_size, channels, height, width]`
         """
         x_norm = self.norm(x)
-        q: torch.Tensor = self.q(x_norm)
-        k: torch.Tensor = self.k(x_norm)
-        v: torch.Tensor = self.v(x_norm)
+        q: Tensor = self.q(x_norm)
+        k: Tensor = self.k(x_norm)
+        v: Tensor = self.v(x_norm)
 
         # QKV vectors
         # Reshape to query, key, and vector embeddings from
@@ -251,7 +275,7 @@ class DownSample(nn.Module):
         super().__init__()
         self.conv = nn.Conv3d(channels, channels, 3, stride=2)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         x = F.pad(x, (0, 1, 0, 1, 0, 1), mode='constant', value=-1)
         x = self.conv(x)
         return x
@@ -264,7 +288,7 @@ class UpSample(nn.Module):
         super().__init__()
         self.conv = nn.Conv3d(channels, channels, 3, padding=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         x = F.interpolate(x, scale_factor=2.0, mode='nearest')
         return self.conv(x)
 
@@ -273,16 +297,23 @@ class ResnetBlock(nn.Module):
     norm1: nn.Module
     conv1: nn.Module
     norm2: nn.Module
+    dropout: nn.Module
     conv2: nn.Module
     nin_shortcut: nn.Module
 
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dropout: float,
+    ) -> None:
         super().__init__()
         # First normalization and convolution layer
         self.norm1 = normalization(in_channels)
         self.conv1 = nn.Conv3d(in_channels, out_channels, 3, padding=1)
         # Second normalization and convolution layer
         self.norm2 = normalization(out_channels)
+        self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv3d(out_channels, out_channels, 3, padding=1)
         # `in_channels` to `out_channels` mapping layer for residual connection
         if in_channels != out_channels:
@@ -290,7 +321,7 @@ class ResnetBlock(nn.Module):
         else:
             self.nin_shortcut = nn.Identity()
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: Tensor) -> Tensor:
         h = x
 
         # First normalization and convolution layer
@@ -301,6 +332,7 @@ class ResnetBlock(nn.Module):
         # Second normalization and convolution layer
         h = self.norm2(h)
         h = swish(h)
+        h = self.dropout(h)
         h = self.conv2(h)
 
         # Map and add residual
@@ -308,7 +340,7 @@ class ResnetBlock(nn.Module):
         return x
 
 
-def swish(x: torch.Tensor):
+def swish(x: Tensor):
     return x * torch.sigmoid(x)
 
 
