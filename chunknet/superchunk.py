@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+import random
 from pathlib import Path
 
 import numpy as np
 
 
-SUPERCHUNK_SIZE: int = 14
+CHUNK_SIZE: int = 16
+SUPERCHUNK_SIZE: int = 14 * CHUNK_SIZE
 SUPERCHUNK_SHAPE: tuple[int, int, int] = (
     SUPERCHUNK_SIZE, SUPERCHUNK_SIZE, SUPERCHUNK_SIZE)
 
@@ -50,3 +51,8 @@ class ChunkLoader:
             result[M - x % M:, :, M - z % M:] = ch[:M - x % M, :, :M - z % M]
 
         return result
+
+    def load_random_super_chunk_unaligned(self) -> np.ndarray:
+        x = random.randint(0, SUPERCHUNK_SIZE * self.dimensions[0])
+        z = random.randint(0, SUPERCHUNK_SIZE * self.dimensions[0])
+        return self.load_superchunk_unaligned(x, z)

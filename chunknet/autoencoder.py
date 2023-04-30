@@ -1,9 +1,49 @@
 from __future__ import annotations
 
+from typing import Callable
+from typing import TypeAlias
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch import Tensor
+from bin.train import num_embeddings
+
+from chunknet.superchunk import ChunkLoader
+
+
+# (actual, predicted) -> loss
+LossFn: TypeAlias = Callable[[Tensor, Tensor], Tensor]
+
+
+def create_autoencoder(
+    num_embeddings: int,
+    embedding_dim: int,
+    channels: int,
+    multipliers: list[int],
+    n_resnet_blocks: int,
+    z_channels: int,
+    dropout: float,
+) -> Autoencoder:
+    embedding = nn.Embedding(num_embeddings, embedding_dim)
+    encoder_3d = Encoder3d(
+        embedding=embedding,
+        channels=channels,
+        multipliers=multipliers,
+        n_resnet_blocks=n_resnet_blocks,
+        z_channels=z_channels,
+        dropout=dropout,
+    )
+    decoder_3d = Decoder3d(
+        embedding=embedding,
+        channels=channels,
+        multipliers=multipliers,
+        n_resnet_blocks=n_resnet_blocks,
+        z_channels=z_channels,
+        dropout=dropout,
+    )
+    autoencoder = Autoencoder(embedding, encoder_3d, decoder_3d)
+    return autoencoder
 
 
 class Autoencoder(nn.Module):
@@ -21,24 +61,21 @@ class Autoencoder(nn.Module):
         self.encoder_3d = encoder_3d
         self.decoder_3d = decoder_3d
 
-    def encode(self, x: Tensor) -> Tensor:
-        x = self.embedding(x)
-        x = self.encoder_3d(x)
-        return x
-
-    def decode(self, x: Tensor) -> Tensor:
-        """Decodes a latent vector. Returns vectors in the embedding
-        space, which must be de-embedded.
-        """
-        x = self.decoder_3d(x)
-        return x
-
     def training_step(
         self,
-        optimizer: torch.optim.Optimizer,
-    ) -> None:
-        optimizer.zero_grad()
-        raise NotImplementedError
+        loader: ChunkLoader,
+        loss_fn: LossFn,
+        embedding_loss: Callable[[Tensor], Tensor],
+    ) -> Tensor:
+        chunk = loader.load_random_super_chunk_unaligned()
+        data = torch.tensor(chunk, requires_grad=True)
+
+        embedded = self.embedding(data)
+        round_trip = self.decoder_3d(self.encoder_3d(embedded))
+
+        loss = loss_fn(round_trip, embedded)
+        loss += embedding_loss(self.embedding.weight)
+        return loss
 
 
 class Encoder3d(nn.Module):
@@ -346,3 +383,31 @@ def swish(x: Tensor):
 
 def normalization(channels: int):
     return nn.GroupNorm(num_groups=32, num_channels=channels, eps=1e-6)
+
+
+class EmbeddingLoss(nn.Module):
+    """Regularization term to prevent degenerate embeddings from arising.
+
+    Because the training data is embedded before running the model, a
+    constraint is needed to ensure the embedding is valid. Namely,
+    embedding vectors must not be too close to each other, as that
+    would prevent reconstruction of the output from the embedding
+    vectors.
+    """
+    k: float
+
+    def __init__(self, k: float) -> None:
+        self.k = k
+
+    def forward(self, embedding_weight: Tensor) -> Tensor:
+        # TODO?: This is O(n^2) in number of embeddings and can probably
+        # be made more efficient.
+        num_embeddings = embedding_weight.shape[0]
+        r = torch.cat([
+            embedding_weight[:num_embeddings - i] - embedding_weight[i:]
+            for i in range(1, num_embeddings)
+        ])
+        r2 = torch.sum(r * r, dim=1)
+        x2 = r2 / self.k**2
+        loss = torch.exp(-x2) / x2
+        return loss.sum()
