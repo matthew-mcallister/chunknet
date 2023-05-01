@@ -1,81 +1,82 @@
 from __future__ import annotations
 
-from typing import Callable
-from typing import TypeAlias
+from typing import Any, Callable
+from pathlib import Path
 
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch import Tensor
-from bin.train import num_embeddings
-
-from chunknet.superchunk import ChunkLoader
 
 
-# (actual, predicted) -> loss
-LossFn: TypeAlias = Callable[[Tensor, Tensor], Tensor]
-
-
-def create_autoencoder(
-    num_embeddings: int,
-    embedding_dim: int,
-    channels: int,
-    multipliers: list[int],
-    n_resnet_blocks: int,
-    z_channels: int,
-    dropout: float,
-) -> Autoencoder:
-    embedding = nn.Embedding(num_embeddings, embedding_dim)
-    encoder_3d = Encoder3d(
-        embedding=embedding,
-        channels=channels,
-        multipliers=multipliers,
-        n_resnet_blocks=n_resnet_blocks,
-        z_channels=z_channels,
-        dropout=dropout,
-    )
-    decoder_3d = Decoder3d(
-        embedding=embedding,
-        channels=channels,
-        multipliers=multipliers,
-        n_resnet_blocks=n_resnet_blocks,
-        z_channels=z_channels,
-        dropout=dropout,
-    )
-    autoencoder = Autoencoder(embedding, encoder_3d, decoder_3d)
-    return autoencoder
-
-
-class Autoencoder(nn.Module):
+class AutoencoderLightning(pl.LightningModule):
     embedding: nn.Embedding
     encoder_3d: Encoder3d
     decoder_3d: Decoder3d
 
+    learning_rate: float
+    loss_fn: nn.MSELoss
+    embedding_loss: EmbeddingLoss
+
     def __init__(
         self,
-        embedding: nn.Embedding,
-        encoder_3d: Encoder3d,
-        decoder_3d: Decoder3d,
+        *,
+        num_embeddings: int,
+        embedding_dim: int,
+        channels: int,
+        multipliers: list[int],
+        n_resnet_blocks: int,
+        z_channels: int,
+        dropout: float,
+        embedding_loss_k: float,
+        learning_rate: float,
     ) -> None:
-        self.embedding = embedding
-        self.encoder_3d = encoder_3d
-        self.decoder_3d = decoder_3d
+        super().__init__()
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        self.encoder_3d = Encoder3d(
+            embedding=self.embedding,
+            channels=channels,
+            multipliers=multipliers,
+            n_resnet_blocks=n_resnet_blocks,
+            z_channels=z_channels,
+            dropout=dropout,
+        )
+        self.decoder_3d = Decoder3d(
+            embedding=self.embedding,
+            channels=channels,
+            multipliers=multipliers,
+            n_resnet_blocks=n_resnet_blocks,
+            z_channels=z_channels,
+            dropout=dropout,
+        )
+        self.learning_rate = learning_rate
+        self.loss_fn = nn.MSELoss()
+        self.embedding_loss = EmbeddingLoss(embedding_loss_k)
 
-    def training_step(
-        self,
-        loader: ChunkLoader,
-        loss_fn: LossFn,
-        embedding_loss: Callable[[Tensor], Tensor],
-    ) -> Tensor:
-        chunk = loader.load_random_super_chunk_unaligned()
-        data = torch.tensor(chunk, requires_grad=True)
+    def configure_optimizers(self) -> Any:
+        optim = torch.optim.Adam(
+            self.parameters(),
+            lr=self.learning_rate,
+            # TODO: Configure these?
+            betas=(0.5, 0.9),
+        )
+        return optim
 
-        embedded = self.embedding(data)
+    def training_step(self, batch: Tensor, batch_idx: int) -> Tensor:
+        embedded: Tensor = self.embedding(batch)
+        # Convert from NxNxNxE to ExNxNxN, E = embedding dim
+        embedded = torch.permute(embedded, (3, 0, 1, 2))
+        # Add trivial batch dimension for places that expect a batch dim,
+        # namely group norm
+        embedded = embedded.reshape((1, *embedded.shape))
         round_trip = self.decoder_3d(self.encoder_3d(embedded))
 
-        loss = loss_fn(round_trip, embedded)
-        loss += embedding_loss(self.embedding.weight)
-        return loss
+        loss = self.loss_fn(round_trip, embedded)
+        self.log('loss', loss)
+        emb_loss = self.embedding_loss(self.embedding.weight)
+        self.log('emb_loss', emb_loss)
+        return loss + emb_loss
 
 
 class Encoder3d(nn.Module):
@@ -233,6 +234,8 @@ class CodecBlock(nn.Module):
         sample: type[DownSample] | type[UpSample] | None,
         dropout: float,
     ) -> None:
+        super().__init__()
+
         # Append resnet blocks
         resnet = nn.ModuleList()
         resnet.append(ResnetBlock(in_channels, out_channels, dropout=dropout))
@@ -397,6 +400,7 @@ class EmbeddingLoss(nn.Module):
     k: float
 
     def __init__(self, k: float) -> None:
+        super().__init__()
         self.k = k
 
     def forward(self, embedding_weight: Tensor) -> Tensor:

@@ -4,13 +4,15 @@ from pathlib import Path
 
 import click
 from torch import nn
+from pytorch_lightning.trainer import Trainer
 
-from chunknet.autoencoder import EmbeddingLoss, create_autoencoder
-from chunknet.superchunk import ChunkLoader
+from chunknet.autoencoder import AutoencoderLightning, EmbeddingLoss
+from chunknet.superchunk import ChunkDataModule, ChunkLoader
 
 
 logger = logging.getLogger('chunknet.train')
 logger.setLevel(logging.INFO)
+logging.basicConfig()
 
 
 def chunk_loader() -> ChunkLoader:
@@ -18,6 +20,7 @@ def chunk_loader() -> ChunkLoader:
 
 
 def calc_num_embeddings() -> int:
+    # TODO: Cache this in /tmp or something
     loader = chunk_loader()
     max_emb = 0
     for x in range(loader.dimensions[0]):
@@ -39,20 +42,24 @@ def num_embeddings() -> None:
 
 @cli.command()
 def train_autoencoder() -> None:
-    logger.info(f'num_embeddings={calc_num_embeddings()}')
-    logger.info('num_embeddings', num_embeddings)
-    # TOOD: Load from config files
-    encoder = create_autoencoder(
-        num_embeddings=calc_num_embeddings(),
+    num_embeddings = calc_num_embeddings()
+    logger.info(f'num_embeddings={num_embeddings}')
+    # TODO: Load from config
+    encoder = AutoencoderLightning(
+        num_embeddings=num_embeddings,
         embedding_dim=4,
         channels=32,
         multipliers=[1, 2, 4, 4],
         n_resnet_blocks=2,
         z_channels=8,
         dropout=0.1,
+        embedding_loss_k=0.01,
+        learning_rate=1e-4,
     )
-    loss_fn = nn.MSELoss()
-    embedding_loss = EmbeddingLoss(0.01)
+    # TODO: Separate validation data
+    datamodule = ChunkDataModule(chunk_loader(), chunk_loader())
+    trainer = Trainer()
+    trainer.fit(model=encoder, datamodule=datamodule)
 
 
 if __name__ == '__main__':
