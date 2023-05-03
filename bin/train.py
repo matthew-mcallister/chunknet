@@ -3,10 +3,9 @@ import os
 from pathlib import Path
 
 import click
-from torch import nn
 from pytorch_lightning.trainer import Trainer
 
-from chunknet.autoencoder import AutoencoderLightning, EmbeddingLoss
+from chunknet.autoencoder import AutoencoderLightning
 from chunknet.superchunk import ChunkDataModule, ChunkLoader
 
 
@@ -65,7 +64,7 @@ def num_params() -> None:
     model = create_model()
     for param in model.parameters():
         n += param.nelement()
-        size += n * param.element_size()
+        size += param.nelement() * param.element_size()
     print(f'number of parameters: {n}')
     print(f'size of parameters (MB): {int(size / 1e6)}')
 
