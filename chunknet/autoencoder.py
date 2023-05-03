@@ -228,6 +228,9 @@ class Decoder3d(nn.Module):
 
 
 class CodecBlock(nn.Module):
+    in_channels: int
+    out_channels: int
+
     resnet: nn.ModuleList
     sample: nn.Module
 
@@ -241,6 +244,9 @@ class CodecBlock(nn.Module):
         dropout: float,
     ) -> None:
         super().__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
         # Append resnet blocks
         resnet = nn.ModuleList()
@@ -256,6 +262,7 @@ class CodecBlock(nn.Module):
             self.sample = nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
+        logger.debug(f'CodecBlock({self.in_channels}, {self.out_channels})')
         for block in self.resnet:
             x = block(x)
         x = self.sample(x)
@@ -263,6 +270,7 @@ class CodecBlock(nn.Module):
 
 
 class AttentionBlock(nn.Module):
+    channels: int
     norm: nn.Module
     q: nn.Module
     k: nn.Module
@@ -272,6 +280,7 @@ class AttentionBlock(nn.Module):
 
     def __init__(self, channels: int) -> None:
         super().__init__()
+        self.channels = channels
         # Group normalization
         self.norm = normalization(channels)
         # Query, key, and vector matrices
@@ -285,6 +294,8 @@ class AttentionBlock(nn.Module):
         """
         x: tensor of shape `[batch_size, channels, height, width]`
         """
+        logger.debug(f'AttentionBlock({self.channels})')
+
         x_norm = self.norm(x)
         q: Tensor = self.q(x_norm)
         k: Tensor = self.k(x_norm)
@@ -315,31 +326,40 @@ class AttentionBlock(nn.Module):
 
 
 class DownSample(nn.Module):
+    channels: int
     conv: nn.Module
 
     def __init__(self, channels: int) -> None:
         super().__init__()
+        self.channels = channels
         self.conv = nn.Conv3d(channels, channels, 3, stride=2)
 
     def forward(self, x: Tensor) -> Tensor:
+        logger.debug(f'DownSample({self.channels})')
         x = F.pad(x, (0, 1, 0, 1, 0, 1), mode='constant', value=-1)
         x = self.conv(x)
         return x
 
 
 class UpSample(nn.Module):
+    channels: int
     conv: nn.Module
 
     def __init__(self, channels: int) -> None:
         super().__init__()
+        self.channels = channels
         self.conv = nn.Conv3d(channels, channels, 3, padding=1)
 
     def forward(self, x: Tensor) -> Tensor:
+        logger.debug(f'DownSample({self.channels})')
         x = F.interpolate(x, scale_factor=2.0, mode='nearest')
         return self.conv(x)
 
 
 class ResnetBlock(nn.Module):
+    in_channels: int
+    out_channels: int
+
     norm1: nn.Module
     conv1: nn.Module
     norm2: nn.Module
@@ -354,6 +374,8 @@ class ResnetBlock(nn.Module):
         dropout: float,
     ) -> None:
         super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         # First normalization and convolution layer
         self.norm1 = normalization(in_channels)
         self.conv1 = nn.Conv3d(in_channels, out_channels, 3, padding=1)
@@ -368,6 +390,8 @@ class ResnetBlock(nn.Module):
             self.nin_shortcut = nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
+        logger.debug(f'ResnetBlock({self.in_channels}, {self.out_channels})')
+
         h = x
 
         # First normalization and convolution layer
