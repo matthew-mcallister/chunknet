@@ -1,4 +1,3 @@
-import logging
 import os
 from pathlib import Path
 
@@ -7,11 +6,10 @@ from pytorch_lightning.trainer import Trainer
 
 from chunknet.autoencoder import AutoencoderLightning
 from chunknet.superchunk import ChunkDataModule, ChunkLoader
+from chunknet.util import get_logger
 
 
-logger = logging.getLogger('chunknet.train')
-logger.setLevel(logging.INFO)
-logging.basicConfig()
+logger = get_logger('chunknet.train')
 
 
 def chunk_loader() -> ChunkLoader:

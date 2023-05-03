@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Callable
-from pathlib import Path
+import logging
+import os
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch import Tensor
+
+from chunknet.util import get_logger
+
+
+logger = get_logger('chunknet.autoencoder')
 
 
 class AutoencoderLightning(pl.LightningModule):
