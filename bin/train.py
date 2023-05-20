@@ -6,7 +6,7 @@ from pytorch_lightning.trainer import Trainer
 
 from chunknet.autoencoder import AutoencoderLightning
 from chunknet.superchunk import ChunkDataModule, ChunkLoader
-from chunknet.util import get_logger
+from chunknet.util import get_logger, pack_unpack_hooks
 
 
 logger = get_logger('chunknet.train')
@@ -73,7 +73,8 @@ def train_autoencoder() -> None:
     # TODO: Separate validation data
     datamodule = ChunkDataModule(chunk_loader(), chunk_loader())
     trainer = Trainer()
-    trainer.fit(model=encoder, datamodule=datamodule)
+    with pack_unpack_hooks():
+        trainer.fit(model=encoder, datamodule=datamodule)
 
 
 if __name__ == '__main__':

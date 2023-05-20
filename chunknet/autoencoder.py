@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-import os
 from typing import Any
 
 import pytorch_lightning as pl
@@ -160,7 +158,7 @@ class Encoder3d(nn.Module):
 
         # Map to latent space
         self.norm_out = normalization(last_size)
-        self.conv_out = nn.Conv3d(last_size, 2 * z_channels, 3, padding=1)
+        self.conv_out = nn.Conv3d(last_size, z_channels, 3, padding=1)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv_in(x)
@@ -192,7 +190,7 @@ class Decoder3d(nn.Module):
         sizes: list[int] = [m * channels for m in [1] + multipliers]
 
         first_size = sizes[-1]
-        self.conv_in = nn.Conv3d(first_size, z_channels, 3, padding=1)
+        self.conv_in = nn.Conv3d(z_channels, first_size, 3, padding=1)
         self.mid = nn.ModuleList((
             ResnetBlock(first_size, first_size, dropout=dropout),
             AttentionBlock(first_size),
@@ -211,7 +209,7 @@ class Decoder3d(nn.Module):
 
         self.norm_out = normalization(channels)
         self.conv_out = nn.Conv3d(
-            channels, embedding.embedding_dim, 3, padding=1)
+            sizes[-1], embedding.embedding_dim, 3, padding=1)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv_in(x)
