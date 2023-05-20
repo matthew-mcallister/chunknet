@@ -34,7 +34,7 @@ def create_model() -> AutoencoderLightning:
     encoder = AutoencoderLightning(
         num_embeddings=num_embeddings,
         embedding_dim=4,
-        channels=32,
+        channels=24,
         multipliers=[1, 2, 4, 4],
         n_resnet_blocks=2,
         z_channels=8,

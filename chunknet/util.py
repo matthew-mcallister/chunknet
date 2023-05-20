@@ -16,6 +16,9 @@ def get_logger(name: str) -> logging.Logger:
     return logger
 
 
+logger = get_logger('chunknet')
+
+
 def get_tensor_dir() -> Path:
     return Path.home() / '.cache/chunknet/tmp'
 
@@ -25,7 +28,7 @@ def id_to_path(id: UUID) -> Path:
 
 
 def pack_hook(x: Tensor) -> UUID:
-    print(f'writing tensor of size {x.element_size() * x.nelement() / 1e6:,.2f}mb')
+    logger.log(0, f'writing tensor of size {x.element_size() * x.nelement() / 1e6:,.2f}mb')
     id = uuid4()
     path = id_to_path(id)
     torch.save(x, path)
@@ -33,9 +36,9 @@ def pack_hook(x: Tensor) -> UUID:
 
 
 def unpack_hook(id: UUID) -> Tensor:
-    print('deleting tensor')
     path = id_to_path(id)
     x = torch.load(path)
+    logger.log(0, f'deleting tensor of size {x.element_size() * x.nelement():,.2f}mb')
     path.unlink()
     return x
 

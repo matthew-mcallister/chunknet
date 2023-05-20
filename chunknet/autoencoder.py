@@ -146,6 +146,7 @@ class Encoder3d(nn.Module):
                 # Downsample at the end of each block except the last
                 sample=DownSample if i + 1 < len(multipliers) else None,
                 dropout=dropout,
+                name=f'encoder-{i}',
             ))
 
         # Final ResNet blocks with attention
@@ -205,11 +206,11 @@ class Decoder3d(nn.Module):
                 n_resnet_blocks=n_resnet_blocks,
                 sample=UpSample if i > 0 else None,
                 dropout=dropout,
+                name=f'decoder-{i}',
             ))
 
         self.norm_out = normalization(channels)
-        self.conv_out = nn.Conv3d(
-            sizes[-1], embedding.embedding_dim, 3, padding=1)
+        self.conv_out = nn.Conv3d(sizes[0], embedding.embedding_dim, 3, padding=1)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.conv_in(x)
@@ -232,6 +233,8 @@ class CodecBlock(nn.Module):
     resnet: nn.ModuleList
     sample: nn.Module
 
+    name: str | None
+
     def __init__(
         self,
         *,
@@ -240,8 +243,11 @@ class CodecBlock(nn.Module):
         n_resnet_blocks: int,
         sample: type[DownSample] | type[UpSample] | None,
         dropout: float,
+        name: str | None = None,
     ) -> None:
         super().__init__()
+
+        self.name = name
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -260,7 +266,7 @@ class CodecBlock(nn.Module):
             self.sample = nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
-        logger.debug(f'CodecBlock({self.in_channels}, {self.out_channels})')
+        logger.debug(f'CodecBlock {self.name} ({self.in_channels}, {self.out_channels})')
         for block in self.resnet:
             x = block(x)
         x = self.sample(x)
@@ -413,7 +419,7 @@ def swish(x: Tensor):
 
 
 def normalization(channels: int):
-    return nn.GroupNorm(num_groups=32, num_channels=channels, eps=1e-6)
+    return nn.GroupNorm(num_groups=8, num_channels=channels, eps=1e-6)
 
 
 class EmbeddingLoss(nn.Module):
