@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import click
+import yaml
 from pytorch_lightning.trainer import Trainer
 
 from chunknet.autoencoder import AutoencoderLightning
@@ -27,20 +28,24 @@ def calc_num_embeddings() -> int:
     return max_emb
 
 
+def model_dir() -> Path:
+    return Path(__file__).parent.parent / 'models'
+
+
+def load_model_config(name: str) -> dict:
+    path = model_dir() / f'{name}.yaml'
+    with path.open() as f:
+        config = yaml.safe_load(f)
+    return config['model']
+
+
 def create_model() -> AutoencoderLightning:
+    config = load_model_config('autoencoder')
     num_embeddings = calc_num_embeddings()
     logger.info(f'num_embeddings={num_embeddings}')
-    # TODO: Load from config
     encoder = AutoencoderLightning(
         num_embeddings=num_embeddings,
-        embedding_dim=4,
-        channels=24,
-        multipliers=[1, 2, 4, 4],
-        n_resnet_blocks=2,
-        z_channels=8,
-        dropout=0.1,
-        embedding_loss_k=0.01,
-        learning_rate=1e-4,
+        **config,
     )
     return encoder
 

@@ -10,6 +10,7 @@ from torch import Tensor
 
 
 def get_logger(name: str) -> logging.Logger:
+    # TODO: Colored output
     logging.basicConfig()
     logger = logging.getLogger(name)
     logger.setLevel(logging.getLevelNamesMapping()[os.getenv('LOG', 'INFO')])

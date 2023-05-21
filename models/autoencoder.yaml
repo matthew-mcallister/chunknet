@@ -1,0 +1,9 @@
+model:
+  embedding_dim: 4
+  channels: 24
+  multipliers: [1, 2, 4, 4]
+  n_resnet_blocks: 2
+  z_channels: 8
+  dropout: 0.1
+  embedding_loss_k: 0.01
+  learning_rate: 1.0e-4

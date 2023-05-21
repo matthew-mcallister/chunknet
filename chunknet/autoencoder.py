@@ -419,6 +419,7 @@ def swish(x: Tensor):
 
 
 def normalization(channels: int):
+    # TODO: Make num_groups parametrizable
     return nn.GroupNorm(num_groups=8, num_channels=channels, eps=1e-6)
 
 
