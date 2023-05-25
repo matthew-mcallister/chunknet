@@ -7,3 +7,5 @@ model:
   dropout: 0.1
   embedding_loss_k: 0.01
   learning_rate: 1.0e-4
+train:
+  sample_radius: 64

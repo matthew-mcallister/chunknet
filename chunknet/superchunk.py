@@ -21,11 +21,18 @@ logger.setLevel(logging.INFO)
 class ChunkLoader(IterableDataset):
     chunk_dir: Path
     dimensions: tuple[int, int]
+    sample_radius: int
 
-    def __init__(self, chunk_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        chunk_dir: Path,
+        sample_radius: int,
+    ) -> None:
         super().__init__()
 
         self.chunk_dir = chunk_dir
+        self.sample_radius = sample_radius
 
         max_x, max_z = 0, 0
         for p in chunk_dir.glob('*.dat'):
@@ -69,11 +76,32 @@ class ChunkLoader(IterableDataset):
         z = random.randint(0, SUPERCHUNK_SIZE * self.dimensions[1])
         return self.load_superchunk_unaligned(x, z)
 
+    def load_random_cube_unaligned(self, radius: int) -> np.ndarray:
+        assert radius < SUPERCHUNK_SIZE
+        # XXX: This isn't strictly uniform sampling
+        superchunk = self.load_random_super_chunk_unaligned()
+        x, y, z = [
+            random.randint(0, SUPERCHUNK_SIZE - radius)
+            for _ in range(3)
+        ]
+        return superchunk[x:x + radius, y:y + radius, z:z + radius]
+
+    def steps_per_epoch(self) -> int:
+        """Approximates how many steps are required to explore the
+        entire dataset.
+        """
+        num_superchunks = self.dimensions[0] * self.dimensions[1]
+        num_samples = num_superchunks * (SUPERCHUNK_SIZE / self.sample_radius)**3
+        return int(num_samples)
+
+    def __len__(self) -> int:
+        return self.steps_per_epoch()
+
     def __iter__(self) -> Iterator[np.ndarray]:
         return self
 
     def __next__(self) -> np.ndarray:
-        return self.load_random_super_chunk_unaligned()
+        return self.load_random_cube_unaligned(self.sample_radius)
 
 
 class ChunkDataModule(pl.LightningDataModule):
